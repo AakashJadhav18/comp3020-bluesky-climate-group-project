@@ -63,7 +63,3 @@ wordcloud(
   rot.per = 0.25,
   colors = brewer.pal(8, "Dark2")
 )
-
-)
-
-
