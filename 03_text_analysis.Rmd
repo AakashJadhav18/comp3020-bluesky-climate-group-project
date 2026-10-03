@@ -1,0 +1,93 @@
+---
+title: "03_text_analysis."
+author: "Pushti Patel"
+date: "2026-10-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+# COMP3020 Group Project - Bluesky: "climate change" vs "climate crisis"
+# Text Analysis & Visualisation
+# Written by: Pushti Patel
+
+library(tm)
+library(SnowballC)
+library(ggplot2)
+library(wordcloud)
+library(RColorBrewer)
+library(dplyr)
+library(stringr)
+
+# Load cleaned posts
+posts <- readRDS("posts_clean.rds")
+
+# ---- Step 1: Prepare text ----
+corpus <- Corpus(VectorSource(posts$text))
+
+# Clean text (COMP3020 standard pipeline)
+corpus <- tm_map(corpus, content_transformer(function(x) iconv(x, to = "ASCII")))
+corpus <- tm_map(corpus, tolower)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, stripWhitespace)
+corpus <- tm_map(corpus, removeWords, stopwords("english"))
+corpus <- tm_map(corpus, stemDocument)
+
+# ---- Step 2: Create Term Document Matrix ----
+tdm <- TermDocumentMatrix(corpus)
+m <- as.matrix(tdm)
+
+# Word frequencies
+word_freq <- sort(rowSums(m), decreasing = TRUE)
+freq_df <- data.frame(
+  word = names(word_freq),
+  freq = word_freq
+)
+
+# ---- Visualisation 1: Frequent Words (Bar Chart) ----
+top20 <- freq_df |> head(20)
+
+ggplot(top20, aes(x = reorder(word, freq), y = freq)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 20 Most Frequent Words",
+       x = "Word", y = "Frequency")
+       
+# ---- Visualisation 2: Word Cloud ----
+set.seed(123)
+wordcloud(
+  words = freq_df$word,
+  freq = freq_df$freq,
+  min.freq = 10,
+  min.words = 200,
+  random.order = FALSE,
+  rot.per = 0.25,
+  colors = brewer.pal(8, "Dark2")
+)
+
+)
+
+
