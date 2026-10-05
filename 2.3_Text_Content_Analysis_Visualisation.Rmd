@@ -1,0 +1,240 @@
+---
+title: "2.3 Text/Content Analysis and Visualisation"
+author: "Pushti Patel"
+date: "2026-10-03"
+output: html_document
+---
+
+```{r}
+# Hide package messages and warnings in the output (applies to the whole document)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# 2.3 Text/Content Analysis and Visualisation
+
+**What?**
+We explore the language used in the 2,400 clean posts: which words appear most often overall, and which words are most common in "climate crisis" posts compared with "climate change" posts.
+
+**Why?**
+The hypothesis test (2.2) found no evidence that engagement depends on framing. Text analysis lets us check whether the two framings differ in **what** people talk about, even if they get similar engagement.
+
+**Missing and unsuitable records:**
+Empty posts, duplicates, very short posts and posts without either phrase were already removed in 2.1, leaving 2,400 posts. This section prepares the **text** inside those posts for word analysis; the original posts are not changed.
+
+```{r}
+# Load packages
+library(dplyr)        # working with tables
+library(stringr)      # working with text
+library(ggplot2)      # plots
+library(knitr)        # tables
+library(tm)           # text mining: corpus, cleaning, term-document matrix (Module 4)
+library(SnowballC)    # stemming
+library(wordcloud)    # word clouds (Module 5)
+library(RColorBrewer) # colour palettes
+
+# Load the cleaned posts from 2.1
+posts <- readRDS("posts_clean.rds")
+
+# Check for missing text
+sum(is.na(posts$text))
+```
+
+There is no missing text (0 posts), so all 2,400 posts can be analysed.
+
+## Text summaries
+
+```{r}
+# Post length (number of words) by framing
+posts |>
+  group_by(framing) |>
+  summarise(posts = n(),
+            mean_words = round(mean(n_words), 1),
+            median_words = median(n_words),
+            max_words = max(n_words))
+```
+
+Posts in both framings are a similar length. "Crisis" posts average 34.1 words (median 36) and "change" posts 33.1 words (median 35). The maximum of 61–64 words reflects Bluesky's short post format. Any difference between the framings is therefore about *what* is said, not how much.
+
+## Cleaning the text
+
+Before counting words, we remove things that would show up as meaningless "words":
+
+- **Links and @usernames**, otherwise punctuation removal turns them into junk like "httpswwwtheguardiancom"
+- **Accented letters:** "ñ" is converted to "n" first, so "El Niño" (a climate pattern that appears often) is kept as "nino" instead of being cut to "nio"
+- **Emojis and special characters**
+- **Numbers and punctuation**
+- **Stopwords** (common words such as "the", "and", "is")
+- **The search words** "climate", "crisis", "change" and their hashtag versions (#ClimateChange, #ClimateCrisis): every post contains them by design, so they would dominate without telling us anything
+- **Generic filler words** such as "will", "like", "just", "can" and "get", which our first run showed dominated the top words without carrying meaning
+- **"amp"** (left over from the "&" symbol) and **"bigearthdataai"** (an account that appears to post repeated automated content)
+
+We then **stem** the words (e.g. "warming" and "warmed" become "warm") so different forms of the same word are counted together. Stemmed words therefore appear in shortened form in the outputs, e.g. "peopl" (people), "energi" (energy), "secur" (security) and "futur" (future).
+
+```{r}
+# Remove links and @usernames, convert ñ to n (so "El Niño" is kept as "nino"),
+# then remove emojis/special characters
+clean_text <- posts$text |>
+  str_remove_all("http\\S+|www\\.\\S+") |>
+  str_remove_all("@\\S+") |>
+  str_replace_all("[ñÑ]", "n") |>
+  iconv(to = "ASCII", sub = "")
+```
+
+```{r}
+# Words to remove: stopwords, the search words (and hashtag versions),
+# generic filler words that carry no meaning, and an automated account name
+custom_stop <- c(stopwords("english"),
+                 "climate", "crisis", "change", "climatechange", "climatecrisis", "amp",
+                 "will", "like", "just", "can", "get", "one", "dont", "now", "also",
+                 "even", "much", "way", "see", "know", "thing", "things", "want",
+                 "let", "use", "still", "really", "that", "isnt", "doesnt", "look",
+                 "come", "many", "lot", "well", "got", "going", "new", "make",
+                 "say", "says", "said", "bigearthdataai")
+
+# Build the corpus (one document per post) and clean it
+corpus <- VCorpus(VectorSource(clean_text))
+corpus <- tm_map(corpus, content_transformer(tolower))   # lowercase
+corpus <- tm_map(corpus, removeNumbers)                  # remove numbers
+corpus <- tm_map(corpus, removePunctuation)              # remove punctuation
+corpus <- tm_map(corpus, removeWords, custom_stop)       # remove stopwords and custom words
+corpus <- tm_map(corpus, stemDocument)                   # stem words
+corpus <- tm_map(corpus, stripWhitespace)                # remove extra spaces
+```
+
+**Example: one post before cleaning**
+
+```{r}
+# Original text of the first post
+posts$text[1]
+```
+
+**The same post after cleaning**
+
+```{r}
+# Cleaned text of the first post
+as.character(corpus[[1]])
+```
+
+The example shows the effect of cleaning: punctuation, stopwords ("are", "not", "a"), filler words ("just", "get") and the phrase "climate crisis" are removed, and words are stemmed (e.g. "party" → "parti", "permanently" → "perman", "promising" → "promis"). One limitation is visible: filler words are removed before stemming, so inflected forms such as "using" still appear after stemming as "use".
+
+## Representing the text
+
+We represent the text as a **term-document matrix**: each row is a word, each column is a post, and each cell counts how many times that word appears in that post (vector space model, Module 4). In 2.4 this matrix is weighted with TF-IDF for clustering.
+
+```{r}
+# Term-document matrix
+tdm <- TermDocumentMatrix(corpus)
+tdm
+```
+
+The term-document matrix contains 6,878 unique terms across 2,400 posts. Only 35,974 of its 16,507,200 cells are non-zero, so the matrix is over 99.7% sparse, and each post contains about 15 distinct terms on average. This is typical of short social media posts: most words appear in only a few posts, which is why TF-IDF weighting is used for clustering in 2.4.
+
+```{r}
+# Convert to a matrix and count how often each word appears overall
+m <- as.matrix(tdm)
+word_freq <- sort(rowSums(m), decreasing = TRUE)
+freq_df <- data.frame(word = names(word_freq), freq = word_freq)
+
+# Check for posts with no words left after cleaning
+sum(colSums(m) == 0)
+```
+
+Two posts contained no words after cleaning (likely because their text consisted only of stopwords, links or mentions). They are kept in the data but have no effect on word frequencies.
+
+```{r}
+# Top 10 most frequent words
+head(freq_df, 10)
+```
+
+## Visualisation 1: Most frequent words
+
+```{r}
+# Bar chart of the 20 most frequent words
+ggplot(head(freq_df, 20), aes(x = reorder(word, freq), y = freq)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 20 Most Frequent Words (stemmed)",
+       x = "Word", y = "Frequency") +
+  theme_minimal()
+```
+
+After removing filler words, the most frequent terms point to several themes: **human impact** ("peopl", "human", "impact", "caus"), **energy** ("fuel", "fossil", "energi"), **politics and security** ("trump", "nation", "secur", "report"), **urgency** ("need", "time", "action") and **extreme weather** ("nino", for El Niño, which appears 146 times). The conversation is therefore not only about climate science, but also about energy, politics and people's lives.
+
+## Visualisation 2: Word cloud of all posts
+
+```{r}
+# Word cloud of the 150 most frequent words (bigger = more frequent)
+set.seed(3020)
+wordcloud(words = freq_df$word, freq = freq_df$freq,
+          max.words = 150, random.order = FALSE,
+          colors = brewer.pal(8, "Dark2"))
+```
+
+The word cloud shows the same dominant themes. Beyond the top 20, smaller words such as "flood", "heat", "weather" and "warm" show discussion of extreme weather, while "hoax", "believ" and "scienc" suggest some posts debate whether climate change is real.
+
+
+## Comparing "crisis" and "change" posts
+
+To compare the framings, we count word frequencies separately for "crisis" posts and "change" posts.
+
+```{r}
+# Word frequencies within each framing
+# (TRUE = all rows/words; the second part picks the posts in each framing)
+crisis_freq <- sort(rowSums(m[TRUE, posts$framing == "crisis"]), decreasing = TRUE)
+change_freq <- sort(rowSums(m[TRUE, posts$framing == "change"]), decreasing = TRUE)
+
+# Top 10 words in each framing, as a % of all words in that framing
+# (percentages make the groups comparable, since there are more "change" posts)
+top_crisis <- data.frame(crisis_word = names(crisis_freq)[1:10],
+                         crisis_pct = round(crisis_freq[1:10] / sum(crisis_freq) * 100, 2))
+top_change <- data.frame(change_word = names(change_freq)[1:10],
+                         change_pct = round(change_freq[1:10] / sum(change_freq) * 100, 2))
+
+kable(cbind(top_crisis, top_change), row.names = FALSE,
+      col.names = c("Crisis word", "% of crisis words", "Change word", "% of change words"),
+      caption = "Top 10 words in each framing")
+```
+
+Five words appear in both top-10 lists ("world", "peopl", "fuel", "global", "year"), so the two framings share a common core. The distinctive words differ, though. **"Crisis" posts** feature "nation", "secur", "report", "nino" and "time", which suggests news reports, national security and extreme weather. **"Change" posts** feature "think", "need", "human", "impact" and "trump", which suggests opinions, political debate and human consequences.
+
+```{r}
+# Posts mentioning El Niño in each framing
+# (matches "niño" or "nino" as a whole word, so names like "Antonino" are not counted)
+posts |>
+  mutate(mentions_nino = str_detect(str_to_lower(text), "\\bni[ñn]o\\b")) |>
+  group_by(framing) |>
+  summarise(posts = n(),
+            nino_posts = sum(mentions_nino),
+            pct = round(mean(mentions_nino) * 100, 1))
+```
+
+Posts using "Niño" or "Nino" as a separate word appear in 68 "crisis" posts (7.7% of 887) and 58 "change" posts (3.8% of 1,513). "Crisis" posts were therefore about twice as likely to mention El Niño, which suggests the "crisis" framing is more often used when discussing extreme weather events. (Hashtags such as #ElNiño, where the words are joined, are not included in this count.)
+
+
+## Visualisation 3 and 4: Word clouds by framing
+
+### Climate crisis posts
+
+```{r}
+# Word cloud of "crisis" posts
+set.seed(3020)
+wordcloud(words = names(crisis_freq), freq = crisis_freq,
+          max.words = 100, random.order = FALSE,
+          colors = brewer.pal(8, "Dark2"))
+```
+
+### Climate change posts
+
+```{r}
+# Word cloud of "change" posts
+set.seed(3020)
+wordcloud(words = names(change_freq), freq = change_freq,
+          max.words = 100, random.order = FALSE,
+          colors = brewer.pal(8, "Dark2"))
+```
+
+The clouds confirm the table. "peopl", "world", "year" and "fuel" are large in both. The "crisis" cloud gives more space to "nation", "report", "secur" and "nino", along with urgent words such as "death", "war" and "suppress", while "trump" appears only small. The "change" cloud is dominated by "peopl", "think", "trump" and "hoax", and "hoax" is not among the 100 words in the "crisis" cloud. This suggests the "change" framing is more often used in debates about whether climate change is real, while "crisis" is more often used alongside news reports, national security and extreme weather.
+
+## Summary
+
+The two framings share a common vocabulary about people, energy and global impact, but differ in emphasis. "Climate crisis" is more associated with news reports, national security and extreme weather (El Niño), while "climate change" is more associated with personal opinions, politics and debate over whether it is real. Combined with the hypothesis test (2.2), this suggests framing reflects *what* people discuss rather than how much engagement they get. Since the themes overlap across both framings, we next use clustering (2.4) to identify these themes formally from the posts themselves, and to see how each framing is distributed across them.
