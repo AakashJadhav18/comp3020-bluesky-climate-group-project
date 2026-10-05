@@ -1,0 +1,125 @@
+---
+title: "2.2 Hypothesis Testing"
+author: "Pushti Patel"
+date: "2026-10-01"
+output: html_document
+---
+
+```{r}
+# Hide package messages and warnings in the output (applies to the whole document)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# 2.2 Hypothesis Testing
+
+**Research question:** Is the level of engagement (likes) related to whether a post uses "climate crisis" or "climate change" framing?
+
+**What?**
+We test whether framing and engagement are related, using a chi-squared test of independence (Module 3).
+
+**Why?**
+If "crisis" framing sounds more urgent, it may attract more engagement than "change" framing. This test tells us whether any difference in engagement between the two framings is larger than we would expect by chance.
+
+**Hypotheses:**
+
+- **H0:** Framing and engagement level are independent.
+- **H1:** Framing and engagement level are not independent.
+
+**Assumptions:**
+Likes are counts with many zeros and a long right tail, so they are not normally distributed. Instead of comparing means, we group likes into three engagement levels and compare the proportion of posts in each level. The chi-squared approximation requires most expected counts to be at least 5. We check this below, and also report a simulated p-value as shown in Module 3.
+
+```{r}
+# Load packages
+library(dplyr)    # for working with tables
+library(ggplot2)  # for plots
+
+# Load the cleaned posts from 2.1
+posts <- readRDS("posts_clean.rds")
+
+# Check the distribution of likes
+summary(posts$like_count)
+```
+
+```{r}
+# Histogram of likes (limited to 0-50 likes so the shape is visible;
+# a few posts have far more, up to 8,399)
+# Each bar = one like count (0, 1, 2, ...)
+hist(posts$like_count[posts$like_count <= 50], breaks = seq(-0.5, 50.5, by = 1),
+     main = "Distribution of likes (posts with 50 or fewer likes)",
+     xlab = "Likes")
+```
+
+**Results** - 
+
+1. Likes are heavily skewed: the median is 1 like but the mean is 11.36, with a maximum of 8,399. This confirms that comparing means would be misleading, so we group likes into engagement levels.
+
+2. The histogram shows the strong right skew: the tallest bar is at 0 likes, and the bars drop off quickly as likes increase. Most posts receive very few likes: 862 of 2,400 posts (35.9%) have none, and 1,889 (78.7%) have 4 or fewer. A small number of posts receive many more likes than the rest, which also confirms that mean likes would be misleading.
+
+
+```{r}
+# Group likes into three engagement levels:
+# 0 = no engagement, 1-4 = some engagement, 5+ = high engagement
+posts <- posts |>
+  mutate(likes_group = cut(like_count,
+                           breaks = c(-1, 0, 4, Inf),
+                           labels = c("0 likes", "1-4 likes", "5+ likes")))
+```
+
+The cut-offs represent no engagement (0 likes), some engagement (1–4 likes) and high engagement (5+ likes).
+
+```{r}
+# Contingency table: number of posts in each framing x engagement level
+tab <- table(posts$framing, posts$likes_group)
+tab
+```
+
+```{r}
+# Row proportions (fairer comparison, since there are more "change" posts than "crisis" posts)
+round(prop.table(tab, 1), 3)
+```
+
+The proportions are very similar across the two framings. "Crisis" posts have a slightly higher share of highly liked posts (23.1% vs 20.2% with 5+ likes) and a slightly lower share of posts with no likes (34.2% vs 36.9%).
+
+```{r}
+# Stacked bar chart: proportion of posts in each engagement level, by framing
+ggplot(posts, aes(x = framing, fill = likes_group)) +
+  geom_bar(position = "fill") +
+  labs(title = "Engagement Level by Framing",
+       x = "Framing", y = "Proportion of posts", fill = "Likes") +
+  theme_minimal()
+```
+
+The stacked bar chart shows the proportion of posts in each engagement level for each framing. Blue (bottom) shows posts with 5+ likes, green (middle) 1–4 likes, and red (top) 0 likes. The two bars look very similar: the blue section is only slightly taller for "crisis" posts (23.1% vs 20.2%), the green sections are almost identical (about 43% each), and the red section is slightly smaller for "crisis" (34.2% vs 36.9%). This visual similarity suggests framing has little effect on engagement, which the chi-squared test below checks formally.
+
+```{r}
+# Run the chi-squared test of independence
+test <- chisq.test(tab)
+
+# Check the expected counts (should be at least 5 for the test to be valid)
+round(test$expected, 1)
+```
+
+All expected counts are well above 5 (the smallest is 188.9), so the chi-squared approximation is valid.
+
+```{r}
+# Show the chi-squared test result
+test
+```
+
+```{r}
+# Simulated p-value (randomisation approach from Module 3)
+# set.seed makes the simulated result the same every time
+set.seed(3020)
+chisq.test(tab, simulate.p.value = TRUE, B = 10000)
+```
+
+**Result and interpretation:**
+The chi-squared test gives χ² = 3.40 (df = 2), p = 0.183, and the simulated p-value (0.182) agrees. We therefore cannot reject H0: there is no evidence that engagement depends on framing. Although "crisis" posts were slightly more likely to receive 5+ likes, the difference is small and could be due to chance.
+
+This suggests the framing label alone does not explain how much engagement a post receives. If framing alone doesn't matter, perhaps the content of the posts does, which we explore through text analysis (2.3) and clustering (2.4).
+
+**Limitations**: 
+Likes depend on more than framing. Accounts with more followers naturally get more likes, and we did not control for this. The engagement cut-offs (0, 1–4, 5+) are also a judgement call; different cut-offs could give slightly different results.
+
+
+
