@@ -1,0 +1,349 @@
+---
+title: "2.5 Network Analysis"
+subtitle: "COMP3020 Social Web Analytics – Group 14"
+author: "Micicello Ngo"
+output:
+  pdf_document:
+    latex_engine: xelatex
+papersize: a4
+geometry: left=1.5cm,right=1.5cm,top=1.5cm,bottom=1.5cm
+fontsize: 10pt
+header-includes:
+- \usepackage{fvextra}
+- \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\},fontsize=\footnotesize}
+- \RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines,fontsize=\footnotesize}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,          # show code (the brief requires R code in the report)
+  message = FALSE,      # hide package messages
+  warning = FALSE,      # hide warnings
+  fig.width = 6,        # default figure width (inches)
+  fig.height = 3.5,     # default figure height (inches)
+  out.width = "60%",    # figures take 60% of the page width
+  fig.align = "center"  # center all figures
+)
+```
+
+```{r}
+# Packages (see 2.1)
+library(dplyr)     # working with tables (filtering, grouping, counting)
+library(stringr)   # working with text (detecting phrases, counting words)
+library(knitr)     # displaying tables in the report
+library(ggplot2)   # plots
+library(tm)        # text mining
+library(SnowballC) # stemming
+library(wordcloud)    # word clouds  
+library(RColorBrewer) # colour palettes 
+library(igraph)     # network analysis
+library(kableExtra) # fitting wide tables to the page width after converting it in to PDF format
+```
+
+# 2.5 Network Analysis
+
+**Research question:** Which accounts occupy the most important positions in the Bluesky reply network around "climate change" and "climate crisis", and do the two framings differ in how much reply interaction they involve?
+
+**What?**
+We build a network of reply relationships between Bluesky accounts and identify the most central accounts.
+
+**Why?**
+2.2–2.4 analysed what posts say and how many likes they get. The network shows who interacts with whom, and whether the conversation is one connected discussion or many separate ones.
+
+**Nodes and edges:**
+A **node** is a Bluesky account. A **directed edge** from account A to account B means that A replied to a post written by B. Repeated replies from A to B are combined into one edge, with a **weight** equal to the number of replies.
+
+**Directed or undirected?**
+The graph is **directed**. A reply has a clear sender and receiver: if A replies to B, B has not necessarily replied to A. This differs from, for example, Facebook friendships, which are mutual and therefore undirected.
+
+```{r}
+# Load raw posts and remove duplicates (posts returned by both searches)
+raw <- readRDS("posts_raw.rds") |>
+  distinct(uri, .keep_all = TRUE)
+
+# Label each post's framing from its text (same rule as 2.1)
+raw <- raw |>
+  mutate(text_lower = str_to_lower(text),
+         framing = case_when(
+           str_detect(text_lower, "climate crisis") & str_detect(text_lower, "climate change") ~ "both",
+           str_detect(text_lower, "climate crisis") ~ "crisis",
+           str_detect(text_lower, "climate change") ~ "change",
+           TRUE ~ "neither"))
+
+# Number of posts after removing duplicates
+nrow(raw)
+```
+
+Removing duplicate posts leaves 4,129 posts, 19 fewer than the 4,148 collected.
+
+## Constructing the reply network
+
+```{r}
+# ID (DID) of the author of each collected post
+raw$source_did <- sapply(raw$author_data, function(x) {
+  if (is.null(x$did)) NA_character_ else x$did
+})
+
+# ID of the account being replied to, taken from the parent post's address
+raw$target_did <- str_extract(raw$in_reply_to, "did:plc:[^/]+")
+
+# Keep valid replies only (both IDs known, and remove self-replies)
+reply_events <- raw |>
+  filter(!is.na(source_did), !is.na(target_did), source_did != target_did) |>
+  transmute(source_did, target_did, framing)
+
+# Combine repeated replies between the same two accounts into one weighted edge
+reply_edges <- reply_events |>
+  count(source_did, target_did, name = "weight")
+
+# Build the directed, weighted graph
+g <- graph_from_data_frame(reply_edges, directed = TRUE)
+g
+```
+
+The reply network contains **`r vcount(g)` accounts (nodes)** and **`r ecount(g)` directed edges**, built from **`r nrow(reply_events)` reply events**.
+
+```{r}
+# Readable labels: use the handle where the account is a collected author, otherwise its ID
+did_lookup <- raw |>
+  filter(!is.na(source_did), !is.na(author_handle)) |>
+  distinct(source_did, .keep_all = TRUE) |>
+  select(did = source_did, handle = author_handle)
+
+vertex_df <- tibble(did = V(g)$name) |>
+  left_join(did_lookup, by = "did") |>
+  mutate(label = ifelse(is.na(handle), did, handle))
+V(g)$label <- vertex_df$label
+
+# Each account's main framing (the framing it uses most often in its own posts)
+author_framing <- raw |>
+  filter(framing %in% c("crisis", "change"), !is.na(source_did)) |>
+  count(source_did, framing) |>
+  group_by(source_did) |>
+  slice_max(n, n = 1, with_ties = FALSE) |>
+  ungroup()
+
+V(g)$framing <- author_framing$framing[match(V(g)$name, author_framing$source_did)]
+
+# Node colours: red = mostly crisis, blue = mostly change,
+# grey = neither phrase or not a collected author
+node_cols <- ifelse(is.na(V(g)$framing), "grey85",
+                    ifelse(V(g)$framing == "crisis", "firebrick", "steelblue"))
+```
+
+## Network properties
+
+```{r}
+# Connected components (weak = ignoring direction, strong = following direction)
+weak_comp   <- components(g, mode = "weak")
+strong_comp <- components(g, mode = "strong")
+
+# Degrees: in = replies received from different accounts, out = accounts replied to
+in_deg    <- degree(g, mode = "in")
+out_deg   <- degree(g, mode = "out")
+total_deg <- degree(g, mode = "all")
+
+# Summary table of network properties
+network_summary <- tibble(
+  Measure = c("Nodes", "Directed edges", "Reply events", "Density",
+              "Weakly connected components", "Largest weak component (nodes)",
+              "Strongly connected components",
+              "Median in-degree", "Maximum in-degree",
+              "Median out-degree", "Maximum out-degree"),
+  Value = c(vcount(g), ecount(g), nrow(reply_events),
+            format(round(edge_density(g, loops = FALSE), 5), scientific = FALSE),
+            weak_comp$no, max(weak_comp$csize), strong_comp$no,
+            median(in_deg), max(in_deg), median(out_deg), max(out_deg)) |> as.character()
+)
+kable(network_summary, caption = "Properties of the reply network")
+```
+
+The reply network contains 1,249 accounts and 779 directed edges, built from 815 reply events (36 replies were repeats between the same two accounts). The density is 0.0005, so only about 0.05% of all possible account-to-account reply links are observed. The network is highly fragmented: it splits into 488 weakly connected components, and the largest contains only 92 accounts (7.4% of all accounts). There are 1,232 strongly connected components among 1,249 accounts, which means almost no accounts are linked by two-way reply chains: replies mostly go one way and are not answered. The median account has an in-degree and out-degree of 1, while the maximum in-degree is 18 and the maximum out-degree is 22.
+
+## Degree distribution
+
+```{r}
+# Histogram of total degree (number of distinct accounts each account is connected to)
+ggplot(tibble(total_degree = as.numeric(total_deg)), aes(x = total_degree)) +
+  geom_histogram(binwidth = 1, boundary = 0, fill = "steelblue") +
+  labs(title = "Degree distribution of the reply network",
+       x = "Total degree", y = "Number of accounts") +
+  theme_minimal()
+```
+
+```{r}
+# Share of accounts (%) with low and high degree
+tibble(degree_1 = round(mean(total_deg == 1) * 100, 1),
+       degree_2_to_4 = round(mean(total_deg >= 2 & total_deg <= 4) * 100, 1),
+       degree_5_plus = round(mean(total_deg >= 5) * 100, 1))
+```
+
+The degree distribution is extremely skewed. 87.3% of accounts are connected to only one other account, 11.4% to 2–4 accounts, and only 1.4% to 5 or more. This "many accounts with few connections, a few hubs" pattern is typical of social networks and matches the Barabási–Albert model.
+
+## Full network
+
+```{r, fig.width = 6.5, fig.height = 4.5}
+# Full network: size = in-degree, colour = main framing,
+# labels for the 5 most replied-to accounts only (so they are readable)
+set.seed(3020)
+top5_in <- names(sort(in_deg, decreasing = TRUE))[1:5]
+vertex_labels <- ifelse(V(g)$name %in% top5_in, V(g)$label, NA)
+
+plot(g,
+     layout = layout_with_fr(g),               # Fruchterman-Reingold layout
+     vertex.size = 2 + 2 * log1p(in_deg),      # bigger = more replies received
+     vertex.label = vertex_labels,
+     vertex.label.cex = 0.55,
+     vertex.color = node_cols,
+     vertex.frame.color = "grey50",
+     edge.width = 0.3 + log1p(E(g)$weight),    # thicker = more replies between the pair
+     edge.arrow.size = 0.15,
+     edge.color = "grey65",
+     main = "Full Bluesky climate reply network")
+legend("bottomleft", legend = c("Mostly crisis", "Mostly change", "Neither / unknown"),
+       fill = c("firebrick", "steelblue", "grey85"), bty = "n", cex = 0.8)
+```
+
+The full network shows many small, separate groups rather than one connected conversation. Most accounts appear as isolated pairs or small stars (several accounts replying to one account). Most nodes are grey, because many replies do not themselves use either phrase, and many replied-to accounts are not collected authors.
+
+## Subgraph: largest connected component
+
+The full network contains many small, disconnected groups. To examine the most connected part of the conversation, we take the **largest weakly connected component**: the biggest group of accounts linked by replies (ignoring direction). This is the largest continuous reply structure in the data, so it is the best place to see how accounts interact.
+
+```{r}
+# Extract the largest weakly connected component
+largest_id <- which.max(weak_comp$csize)
+g_lcc <- induced_subgraph(g, vids = V(g)[weak_comp$membership == largest_id])
+
+# Number of nodes and edges in the largest component
+c(nodes = vcount(g_lcc), edges = ecount(g_lcc))
+```
+
+```{r, fig.width = 6.5, fig.height = 4.5}
+# Largest component: size = in-degree, colour = main framing,
+# labels for the 10 most connected accounts
+set.seed(3020)
+lcc_in    <- degree(g_lcc, mode = "in")
+lcc_total <- degree(g_lcc, mode = "all")
+top10_lcc <- names(sort(lcc_total, decreasing = TRUE))[1:10]
+lcc_labels <- ifelse(V(g_lcc)$name %in% top10_lcc, V(g_lcc)$label, NA)
+lcc_cols <- ifelse(is.na(V(g_lcc)$framing), "grey85",
+                   ifelse(V(g_lcc)$framing == "crisis", "firebrick", "steelblue"))
+
+plot(g_lcc,
+     layout = layout_with_fr(g_lcc),
+     vertex.size = 4 + 3 * log1p(lcc_in),
+     vertex.label = lcc_labels,
+     vertex.label.cex = 0.7,
+     vertex.color = lcc_cols,
+     vertex.frame.color = "grey50",
+     edge.width = 0.5 + log1p(E(g_lcc)$weight),
+     edge.arrow.size = 0.2,
+     edge.color = "grey60",
+     main = "Largest connected reply community")
+legend("bottomleft", legend = c("Mostly crisis", "Mostly change", "Neither / unknown"),
+       fill = c("firebrick", "steelblue", "grey85"), bty = "n", cex = 0.8)
+```
+
+The largest component has 92 accounts and 93 edges, almost a tree (a tree with 92 nodes has exactly 91 edges), so it contains very few closed loops of conversation. It is made up of several star-shaped groups, each centred on a heavily replied-to account, linked by a few connecting accounts. In the star around abdulelsayed.bsky.social, most replying accounts are red (mostly "crisis"), while several accounts in the group around the central did:plc:4llrhdcl… account are blue (mostly "change"). This suggests that accounts replying to the same post often use the same framing.
+
+## Centrality
+
+We use two centrality measures, plus PageRank as a supporting measure:
+
+1. **In-degree**: the number of different accounts that replied to an account. A high in-degree means the account attracts discussion.
+2. **Betweenness**: how often an account lies on the shortest paths between other accounts. A high value means the account bridges different parts of the network. We report it for the directed network and, because directed paths turn out to be extremely rare, also for the undirected network, which shows which accounts link groups together regardless of reply direction. Edge weights are not used, because in igraph weights are treated as distances.
+3. **PageRank**: the long-run probability of a random surfer landing on an account, following replies with probability $\lambda$ = 0.8 and jumping randomly otherwise. It rewards accounts that receive replies from other important accounts.
+
+```{r}
+# Centrality measures for every account
+cent <- tibble(
+  account     = V(g)$label,
+  framing     = V(g)$framing,
+  in_degree   = as.numeric(in_deg),
+  out_degree  = as.numeric(out_deg),
+  # undirected betweenness: bridging between groups, ignoring reply direction
+  betweenness_undirected = round(betweenness(g, directed = FALSE, weights = NA,
+                                             normalized = TRUE), 5),
+  # PageRank with lambda = 0.8, using reply counts as edge weights
+  pagerank    = round(page_rank(g, directed = TRUE, damping = 0.8,
+                                weights = E(g)$weight)$vector, 4)
+)
+```
+
+```{r}
+# Top 10 accounts by in-degree
+cent |> arrange(desc(in_degree), desc(pagerank)) |> slice_head(n = 10) |>
+  kable(format = "latex", booktabs = TRUE,
+        caption = "Top 10 accounts by in-degree") |>
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+The most replied-to account received replies from 18 different accounts, but its own posts were not in our sample, so only its ID is shown. The next most replied-to accounts appear to be public figures such as politicians and political commentators (e.g. abdulelsayed, michaelhobbes, whstancil, zackpolanski, davidshoebridge). All ten have an out-degree of 0: they attract replies but did not reply to anyone in this sample, which is consistent with a broadcast pattern where prominent accounts post and others respond. Among the five whose framing is known, three mostly use "crisis" and two mostly use "change", so the central accounts are not dominated by one framing.
+
+```{r}
+# Directed betweenness: how many accounts lie on at least one directed path between others?
+bet_dir <- betweenness(g, directed = TRUE, weights = NA)
+c(accounts_with_betweenness_above_0 = sum(bet_dir > 0),
+  max_directed_betweenness = max(bet_dir))
+```
+
+Only 28 of the 1,249 accounts (2.2%) have a directed betweenness above 0, and the highest value is 5, meaning even the most "between" account lies on only 5 shortest directed paths. This confirms that directed reply chains (A replies to B, who replies to C) are almost non-existent: most replies go to accounts that never reply onwards. Directed betweenness therefore cannot identify bridges in this network, so we also measure betweenness on the undirected network.
+
+```{r}
+# Top 10 accounts by undirected betweenness (bridges between groups)
+cent |> arrange(desc(betweenness_undirected)) |> slice_head(n = 10) |>
+  kable(format = "latex", booktabs = TRUE,
+        caption = "Top 10 accounts by betweenness (undirected)") |>
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+Two kinds of accounts act as bridges. The first are active repliers that reply to many different accounts: eliemar.bsky.social has the highest betweenness and replied to 22 different accounts, and bowprow (8), vero1986 (7) and kimnoreen (4) play a similar role. By replying across several groups, they connect star-shaped groups that would otherwise be separate; in the largest component, eliemar sits at the centre and bowprow links the abdulelsayed group to the rest. The second are the heavily replied-to hubs (the did:plc:4llrhdcl… account and abdulelsayed), which join together the many accounts replying to them. All betweenness values are small (at most 0.004) because the network is so fragmented that most pairs of accounts are not connected at all.
+
+```{r}
+# Top 10 accounts by PageRank
+cent |> arrange(desc(pagerank)) |> slice_head(n = 10) |>
+  kable(format = "latex", booktabs = TRUE,
+        caption = "Top 10 accounts by PageRank") |>
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+The top three accounts by PageRank are the same as by in-degree, confirming them as the most important accounts. PageRank also ranks some accounts with an in-degree of only 1–2 highly (e.g. numbcat9, serverroomrelic). This is likely because they are replied to by accounts that are themselves replied to, so importance flows to them through short reply chains, which in-degree alone does not capture.
+
+## Framing and reply activity
+
+To link the network to the overall research question, we compare how often "crisis" and "change" posts are replies to another post. We compare percentages rather than counts, so the different number of posts in each framing does not affect the comparison.
+
+```{r}
+# Label each post as an original post or a reply
+reply_rate <- raw |>
+  filter(framing %in% c("crisis", "change")) |>
+  mutate(post_type = ifelse(is.na(in_reply_to), "original post", "reply"))
+
+# Share of posts in each framing that are replies
+reply_rate |>
+  group_by(framing) |>
+  summarise(posts = n(),
+            replies = sum(post_type == "reply"),
+            pct_replies = round(mean(post_type == "reply") * 100, 1))
+```
+
+```{r}
+# Chi-squared test: are framing and post type independent?
+tab_reply <- table(framing = reply_rate$framing, post_type = reply_rate$post_type)
+test_reply <- chisq.test(tab_reply)
+round(test_reply$expected, 1)   # expected counts should be at least 5
+test_reply
+```
+
+**H0:** framing and post type (original post or reply) are independent. All expected counts are well above 5 (the smallest is 399.5). R applies a continuity correction for 2-by-2 tables. The test gives X² = 18.12 (df = 1), p < 0.001, so we reject H0. 45.6% of "change" posts are replies, compared with 36.9% of "crisis" posts. "Change" framing is therefore more common in conversation (replying to others), while "crisis" is more common in original posts. This matches 2.3 and 2.4, where "change" was associated with opinions and debate and "crisis" with news reports and events.
+
+*Limitations*
+
+- **Data collection and API limits:** the network only includes replies found by searching for the two phrases, limited to about 2,000 posts per phrase and a single snapshot (1 Oct 2026). Replies that did not use either phrase, and earlier or later parts of conversations, were not collected. This is likely the main reason the network is so fragmented: many conversations appear only partly, as isolated pairs or stars.
+- **Filtering:** the network uses the raw (deduplicated) posts rather than the 2,400 cleaned posts, because the cleaning steps would have removed many replies. Framing labels are based on each account's own collected posts, so accounts with no collected posts have no framing (grey).
+- **Replies only:** the network uses reply relationships only, not follows, reposts, quotes or mentions. Adding other relationships might produce a larger, better-connected network.
+- **Target accounts:** the replied-to account is identified from the ID in the `in_reply_to` address. Accounts that are not collected authors appear with their ID instead of a handle. Only standard account IDs (`did:plc`) are extracted.
+- **Construction choices:** self-replies were removed and repeated replies between the same two accounts were combined into one weighted edge, so edge counts represent unique account-to-account connections rather than individual replies.
+
+

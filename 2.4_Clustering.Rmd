@@ -4,44 +4,16 @@ author: "Aakash Jadhav"
 date: "`r Sys.Date()`"
 output: html_document
 ---
+```{r, message=FALSE}
+library(dplyr); library(stringr); library(knitr); library(ggplot2); library(tm); library(SnowballC)
 
-```{r}
-# Hide package messages and warnings in the output (applies to the whole document)
-knitr::opts_chunk$set(message = FALSE, warning = FALSE)
-```
-
-**What?**
-We investigate whether the 2,400 posts form meaningful groups (clusters) based on the words they use, and what theme each cluster represents.
-
-**Why?**
-The text analysis (2.3) suggested several overlapping themes (energy, politics and security, human impact, extreme weather, debate over whether climate change is real). Clustering identifies these themes directly from the posts, without using the framing labels. We can then check whether "crisis" and "change" posts fall into different themes.
-
-```{r}
-# Load packages
-library(dplyr)     # working with tables
-library(stringr)   # working with text
-library(ggplot2)   # plots
-library(knitr)     # tables
-library(tm)        # text mining: document-term matrix, TF-IDF (Module 4)
-library(SnowballC) # stemming
-
-# Load the cleaned posts from 2.1
+# Rebuild the cleaned posts and text corpus exactly as in 2.3
 posts <- readRDS("posts_clean.rds")
-```
-
-## Representation: cleaning the text (same steps as 2.3)
-
-We use exactly the same text cleaning as 2.3, so both sections analyse the same words.
-
-```{r}
-# Remove links and @usernames, convert ñ to n, then remove emojis/special characters
 clean_text <- posts$text |>
   str_remove_all("http\\S+|www\\.\\S+") |>
   str_remove_all("@\\S+") |>
   str_replace_all("[ñÑ]", "n") |>
   iconv(to = "ASCII", sub = "")
-
-# Same custom stopword list as 2.3
 custom_stop <- c(stopwords("english"),
                  "climate", "crisis", "change", "climatechange", "climatecrisis", "amp",
                  "will", "like", "just", "can", "get", "one", "dont", "now", "also",
@@ -49,8 +21,6 @@ custom_stop <- c(stopwords("english"),
                  "let", "use", "still", "really", "that", "isnt", "doesnt", "look",
                  "come", "many", "lot", "well", "got", "going", "new", "make",
                  "say", "says", "said", "bigearthdataai")
-
-# Build and clean the corpus (one document per post)
 corpus <- VCorpus(VectorSource(clean_text))
 corpus <- tm_map(corpus, content_transformer(tolower))
 corpus <- tm_map(corpus, removeNumbers)
@@ -60,21 +30,29 @@ corpus <- tm_map(corpus, stemDocument)
 corpus <- tm_map(corpus, stripWhitespace)
 ```
 
+# 2.4 Clustering
+
+**Research question:** Can posts be grouped into distinct themes based on their words, and are the two framings distributed differently across these themes?
+
+**What?**
+We investigate whether the 2,400 posts form meaningful groups (clusters) based on the words they use, and what theme each cluster represents.
+
+**Why?**
+The text analysis (2.3) suggested several overlapping themes (energy, politics and security, human impact, extreme weather, debate over whether climate change is real). Clustering identifies these themes directly from the posts, without using the framing labels. We can then check whether "crisis" and "change" posts fall into different themes.
+
 ## Representation: document-term matrix and TF-IDF
 
+We reuse the cleaned posts and text (`corpus`) from 2.3, so both sections analyse exactly the same words.
+
 ```{r}
-# Document-term matrix: one row per post, one column per word
-dtm <- DocumentTermMatrix(corpus)
+dtm <- DocumentTermMatrix(corpus) # Document-term matrix: one row per post, one column per word
 dtm
 ```
 
-The document-term matrix has 2,400 posts and 6,878 terms, the same vocabulary as in 2.3.
-
-Most of these terms appear in only one or two posts. Rare words cannot help group posts together, and they add noise to the distances, so we keep only terms that appear in at least 0.5% of posts (about 12 or more posts).
+The document-term matrix has 2,400 posts and 6,878 terms, the same vocabulary as in 2.3. Most of these terms appear in only one or two posts. Rare words cannot help group posts together, and they add noise to the distances, so we keep only terms that appear in at least 0.5% of posts (about 12 or more posts).
 
 ```{r}
-# Keep only terms that appear in at least 0.5% of posts
-dtm_small <- removeSparseTerms(dtm, 0.995)
+dtm_small <- removeSparseTerms(dtm, 0.995)   # Keep only terms that appear in at least 0.5% of posts
 dtm_small
 ```
 
@@ -89,7 +67,7 @@ sum(!keep)
 
 15 posts contained none of the 667 remaining terms, so they are removed, leaving 2,385 posts for clustering.
 
-We weight the matrix with **TF-IDF** (Module 4). It gives more weight to words that are frequent in a post but rare across all posts, so distinctive words count more than words that appear everywhere. tm's TF-IDF also adjusts for post length, so longer posts don't dominate.
+We weight the matrix with **TF-IDF**. It gives more weight to words that are frequent in a post but rare across all posts, so distinctive words count more than words that appear everywhere. tm's TF-IDF also adjusts for post length, so longer posts don't dominate.
 
 ```{r}
 # TF-IDF weighting, then keep only the posts with at least one remaining term
@@ -100,7 +78,7 @@ dim(X)
 
 ## Distance measure: cosine distance
 
-We use **cosine distance** (Modules 4 and 5). It compares posts by the *direction* of their word vectors, i.e. which words they use, regardless of length. Euclidean distance would treat two posts as different simply because one is longer. Cosine distance is 0 for posts using the same words in the same proportions, and 1 for posts with no words in common.
+We use **cosine distance**. It compares posts by the *direction* of their word vectors, i.e. which words they use, regardless of length. Euclidean distance would treat two posts as different simply because one is longer. Cosine distance is 0 for posts using the same words in the same proportions, and 1 for posts with no words in common.
 
 ```{r}
 # Cosine distance = 1 - cosine similarity
@@ -110,7 +88,7 @@ cos_dist <- as.dist(1 - X_norm %*% t(X_norm))
 
 ## First attempt: hierarchical clustering
 
-We first tried **hierarchical clustering** (Module 6), because it works directly on the cosine distance matrix. We compared two linkage methods:
+We first tried **hierarchical clustering**, because it works directly on the cosine distance matrix. We compared two linkage methods:
 
 - **Complete linkage:** the distance between clusters is the *largest* distance between their posts
 - **Group average linkage:** the distance between clusters is the *average* distance between their posts
@@ -137,7 +115,7 @@ kable(size_table, caption = "Hierarchical clustering: cluster sizes for each k a
 
 Neither linkage produces useful clusters. **Complete linkage** keeps at least 2,363 of the 2,385 posts in one cluster for every k, and only splits off tiny groups of 2–5 posts. **Average linkage** is better, but one cluster still holds at least 2,019 posts (85%) at every k.
 
-```{r}
+```{r, fig.width = 6.5, fig.height = 4.5}
 # Dendrogram of the average linkage tree
 plot(hc_average, labels = FALSE, hang = -1,
      main = "Dendrogram (cosine distance, average linkage)",
@@ -150,7 +128,7 @@ The reason is the data itself. After removing rare terms, each post contains onl
 
 ## Final method: k-means on normalised TF-IDF vectors
 
-We therefore use **k-means** (Module 6) on the TF-IDF vectors after scaling each post's vector to length 1 (`X_norm`). For vectors of length 1, the squared Euclidean distance used by k-means equals 2 × the cosine distance, so k-means on `X_norm` still groups posts by cosine similarity, the same distance measure as above. Unlike hierarchical clustering, k-means builds clusters around central points (centroids), which tends to give more balanced groups. We use 20 random starts (`nstart = 20`) to avoid a poor solution.
+We therefore use **k-means** on the TF-IDF vectors after scaling each post's vector to length 1 (`X_norm`). For vectors of length 1, the squared Euclidean distance used by k-means equals twice the cosine distance, so k-means on `X_norm` still groups posts by cosine similarity, the same distance measure as above. Unlike hierarchical clustering, k-means builds clusters around central points (centroids), which tends to give more balanced groups. We use 20 random starts (`nstart = 20`) to avoid a poor solution.
 
 ## Choosing the number of clusters
 
@@ -217,7 +195,7 @@ kable(data.frame(cluster = 1:k,
 
 ## Visualising the clusters (MDS)
 
-We visualise the clusters with **multidimensional scaling** (Module 5). MDS places the posts in two dimensions so that the distances between points approximate their cosine distances. Unlike PCA, it works with any distance measure.
+We visualise the clusters with **multidimensional scaling**. MDS places the posts in two dimensions so that the distances between points approximate their cosine distances. Unlike PCA, it works with any distance measure.
 
 ```{r}
 # Classical MDS on the cosine distances, reduced to 2 dimensions
@@ -245,8 +223,7 @@ tab_cf
 ```
 
 ```{r}
-# Proportion of "change" and "crisis" posts within each cluster
-round(prop.table(tab_cf, 1), 3)
+round(prop.table(tab_cf, 1), 3)   # Proportion of "change" and "crisis" posts within each cluster
 ```
 
 ```{r}
@@ -254,6 +231,7 @@ round(prop.table(tab_cf, 1), 3)
 ggplot(mds_df, aes(x = cluster, fill = framing)) +
   geom_bar(position = "fill") +
   geom_hline(yintercept = mean(posts_k$framing == "crisis"), linetype = "dashed") +
+  scale_fill_manual(values = c(change = "steelblue", crisis = "firebrick")) +
   labs(title = "Framing mix within each cluster",
        subtitle = "Dashed line = overall share of crisis posts",
        x = "Cluster", y = "Proportion of posts", fill = "Framing") +
@@ -262,8 +240,7 @@ ggplot(mds_df, aes(x = cluster, fill = framing)) +
 
 Overall, 37.0% of the clustered posts use "crisis" framing (dashed line). Clusters 2 and 4 are dominated by "crisis" posts: 78.6% of the national security cluster and 89.6% of the extreme weather cluster. In contrast, "crisis" is under-represented in clusters 1 (31.0%) and 3 (26.4%), the fossil fuel and opinion clusters. The general discussion cluster (35.7%) is close to the overall share.
 
-
-To check whether the framing mix really differs between clusters, we use the chi-squared test of independence (Module 3), as in 2.2.
+To check whether the framing mix really differs between clusters, we use the chi-squared test of independence, as in 2.2.
 
 ```{r}
 # Chi-squared test: are cluster and framing independent?
@@ -275,8 +252,7 @@ round(test_cf$expected, 1)   # expected counts should be at least 5
 test_cf
 ```
 
-H0: cluster and framing are independent. H1: cluster and framing are not independent. All expected counts are above 5 (the smallest is 17.8), so the test is valid. The chi-squared test gives χ² = 108.29 (df = 4), p < 0.001, so we reject H0: the framing mix differs significantly between clusters. "Crisis" framing is concentrated in posts about specific news events (the security report and El Niño deaths), while "change" framing is more common in opinion and debate posts.
-
+H0: cluster and framing are independent. H1: cluster and framing are not independent. All expected counts are above 5 (the smallest is 17.8), so the test is valid. The chi-squared test gives X² = 108.29 (df = 4), p < 0.001, so we reject H0: the framing mix differs significantly between clusters. "Crisis" framing is concentrated in posts about specific news events (the security report and El Niño deaths), while "change" framing is more common in opinion and debate posts.
 
 ## Linking clusters to engagement
 
@@ -291,19 +267,6 @@ posts_k |>
 ```
 
 Every cluster has a median of 1 like. The share of posts with 5 or more likes ranges from 19.6% (cluster 2) to 27.3% (cluster 3), so engagement is broadly similar across themes. Clusters 3 and 4 are slightly higher, but they are small (110 and 48 posts), so these differences may not be meaningful. This is consistent with 2.2: neither framing nor theme is strongly linked to engagement.
-
-
-```{r}
-# Save each post's cluster for use in other sections (e.g. colouring the network in 2.5)
-saveRDS(data.frame(uri = posts_k$uri,
-                   author_handle = posts_k$author_handle,
-                   cluster = clusters),
-        "post_clusters.rds")
-```
-
-## Summary
-
-Clustering the posts by their words (TF-IDF with cosine distance) shows that hierarchical clustering cannot separate such short, sparse posts, while k-means on normalised TF-IDF vectors identifies one large general-discussion cluster and four smaller themed clusters: fossil fuels and legal cases, a national security report, opinions and solutions, and extreme weather and deaths. The framing mix differs significantly between clusters: "crisis" is concentrated in posts about specific news events and extreme weather, while "change" is more common in opinion and debate. Together with 2.2 and 2.3, this suggests that framing reflects what people are talking about rather than how much engagement they receive.
 
 *Limitations*: the clusters are only weakly separated (no clear elbow, one large general cluster), the choice of k = 5 is a judgement, and the two smallest clusters may each reflect a single news story rather than a lasting theme.
 

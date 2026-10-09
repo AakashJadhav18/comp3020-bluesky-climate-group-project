@@ -1,6 +1,6 @@
 ---
 title: "2.3 Text/Content Analysis and Visualisation"
-author: "Pushti Patel"
+author: "Pushti Patel & Aakash Jadhav"
 date: "2026-10-03"
 output: html_document
 ---
